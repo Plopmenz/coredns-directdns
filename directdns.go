@@ -60,6 +60,11 @@ func (directdns *DirectDNS) handleDirectQuery(ctx context.Context, r *dns.Msg, w
         return plugin.NextOrFailure(directdns.Name(), directdns.Next, ctx, w, r)
     }
 
+    if isLocalAddr(net.ParseIP(ipv6)) {
+        log.Debugf("[directdns] %s is this machine; not forwarding to itself", ipv6)
+        return plugin.NextOrFailure(directdns.Name(), directdns.Next, ctx, w, r)
+    }
+
     resp, err := forwardToNode(r, ipv6)
     if err != nil || resp == nil {
         log.Debugf("[directdns] forward failed: %v, falling back", err)
@@ -139,6 +144,11 @@ func (directdns *DirectDNS) rewriteCNAMEs(originalResp *dns.Msg, r *dns.Msg) ([]
             continue
         }
 
+        if isLocalAddr(net.ParseIP(ipv6)) {
+            log.Debugf("[directdns] CNAME target %s is this machine; not forwarding to itself", cname.Target)
+            continue
+        }
+
         log.Debugf("[directdns] querying IPv6 %s for CNAME target %s", ipv6, cname.Target)
         ipv6Resp, err := forwardToNodeWithName(r, ipv6, cname.Target)
         if err != nil || ipv6Resp == nil {
@@ -215,4 +225,26 @@ func forwardToNodeWithName(req *dns.Msg, ipv6 string, name string) (*dns.Msg, er
     addr := "[" + ipv6 + "]:53"
     resp, _, err := c.Exchange(newReq, addr)
     return resp, err
+}
+
+// isLocalAddr reports whether ip is one of this machine's own addresses.
+// Forwarding a query there sends it straight back into this server, so a name
+// that decodes to ourselves (in any spelling) must never be forwarded.
+func isLocalAddr(ip net.IP) bool {
+    if ip == nil {
+        return false
+    }
+    if ip.IsLoopback() {
+        return true
+    }
+    addrs, err := net.InterfaceAddrs()
+    if err != nil {
+        return false
+    }
+    for _, a := range addrs {
+        if n, ok := a.(*net.IPNet); ok && n.IP.Equal(ip) {
+            return true
+        }
+    }
+    return false
 }
